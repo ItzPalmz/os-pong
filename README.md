@@ -1,3 +1,8 @@
+# Note
+
+Used the starter code from https://github.com/CMKL-Courses/sys101-s25-baremetal to create a os pong game.
+
+
 # Bare Metal Starter
 
 This is a starting implementation for a simple bare metal kernel for x86-64 architecture. The implementation is based on [rust-osdev/bootloader](https://github.com/rust-osdev/bootloader) crate,
