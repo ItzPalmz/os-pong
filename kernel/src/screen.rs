@@ -1,5 +1,3 @@
-// Original code from rust-osdev/bootloader crate https://github.com/rust-osdev/bootloader
-
 use core::{fmt, ptr};
 use noto_sans_mono_bitmap::{FontWeight, get_raster, RasterizedChar};
 use bootloader_api::info::{FrameBuffer, FrameBufferInfo, PixelFormat};
@@ -17,10 +15,8 @@ impl fmt::Write for Writer {
 }
 
 pub fn screenwriter() -> &'static mut ScreenWriter {
-    let writer = unsafe { WRITER.get_mut() }.as_mut().unwrap();
-    writer
+    unsafe { WRITER.get_mut() }.as_mut().unwrap()
 }
-
 
 pub fn init(buffer: &'static mut FrameBuffer) {
     let info = buffer.info();
@@ -29,7 +25,6 @@ pub fn init(buffer: &'static mut FrameBuffer) {
     *unsafe { WRITER.get_mut() } = Some(writer);
 }
 
-/// Additional vertical space between lines
 const LINE_SPACING: usize = 0;
 
 pub struct ScreenWriter {
@@ -60,19 +55,26 @@ impl ScreenWriter {
         self.x_pos = 0;
     }
 
-    /// Erases all text on the screen.
     pub fn clear(&mut self) {
         self.x_pos = 0;
         self.y_pos = 0;
         self.framebuffer.fill(0);
     }
 
-    fn width(&self) -> usize {
-        self.info.width.into()
+    pub fn clear_screen(&mut self, r: u8, g: u8, b: u8) {
+        for y in 0..self.height() {
+            for x in 0..self.width() {
+                self.safe_draw_pixel(x, y, r, g, b);
+            }
+        }
     }
 
-    fn height(&self) -> usize {
-        self.info.height.into()
+    pub fn width(&self) -> usize {
+        self.info.width as usize
+    }
+
+    pub fn height(&self) -> usize {
+        self.info.height as usize
     }
 
     fn write_char(&mut self, c: char) {
@@ -80,69 +82,82 @@ impl ScreenWriter {
             '\n' => self.newline(),
             '\r' => self.carriage_return(),
             c => {
-                match get_raster(c, FontWeight::Regular, Size16) {
-                    Some(bitmap_char) => {
-                        if self.x_pos + bitmap_char.width() > self.width() {
-                            self.newline();
-                        }
-                        if self.y_pos + bitmap_char.height() > self.height() {
-                            self.clear();
-                        }
-                        self.write_rendered_char(bitmap_char);
-                    },
-                    None => {}
+                if let Some(bitmap_char) = get_raster(c, FontWeight::Regular, Size16) {
+                    if self.x_pos + bitmap_char.width() > self.width() {
+                        self.newline();
+                    }
+                    if self.y_pos + bitmap_char.height() > self.height() {
+                        self.clear();
+                    }
+                    self.write_rendered_char(bitmap_char);
                 }
             }
         }
     }
 
-    fn write_rendered_char(&mut self, rendered_char: RasterizedChar) {
-        for (y, row) in rendered_char.raster().iter().enumerate() {
-            for (x, byte) in row.iter().enumerate() {
-                self.write_pixel(self.x_pos + x, self.y_pos + y, *byte);
-            }
+    pub fn safe_draw_pixel(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
+        if x >= self.width() || y >= self.height() {
+            return;
         }
-        self.x_pos += rendered_char.width();
-    }
-
-    pub fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
-        let pixel_offset = y * usize::from(self.info.stride) + x;
-        let color = match self.info.pixel_format {
-            PixelFormat::Rgb => [intensity / 4, intensity, intensity / 2, 0],
-            PixelFormat::Bgr => [intensity / 2, intensity, intensity / 4, 0],
-            other => {
-                // set a supported (but invalid) pixel format before panicking to avoid a double
-                // panic; it might not be readable though
-                self.info.pixel_format = PixelFormat::Rgb;
-                panic!("pixel format {:?} not supported in logger", other)
-            }
-        };
-        let bytes_per_pixel = self.info.bytes_per_pixel;
-        let byte_offset = pixel_offset * usize::from(bytes_per_pixel);
-        self.framebuffer[byte_offset..(byte_offset + usize::from(bytes_per_pixel))]
-            .copy_from_slice(&color[..usize::from(bytes_per_pixel)]);
-        let _ = unsafe { ptr::read_volatile(&self.framebuffer[byte_offset]) };
-    }
-
-    pub fn draw_pixel(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
-        let pixel_offset = y * usize::from(self.info.stride) + x;
+        
+        let pixel_offset = y * self.info.stride as usize + x;
         let color = match self.info.pixel_format {
             PixelFormat::Rgb => [r, g, b, 0],
             PixelFormat::Bgr => [b, g, r, 0],
             other => {
-                // set a supported (but invalid) pixel format before panicking to avoid a double
-                // panic; it might not be readable though
                 self.info.pixel_format = PixelFormat::Rgb;
-                panic!("pixel format {:?} not supported in logger", other)
+                panic!("pixel format {:?} not supported", other)
             }
         };
-        let bytes_per_pixel = self.info.bytes_per_pixel;
-        let byte_offset = pixel_offset * usize::from(bytes_per_pixel);
-        self.framebuffer[byte_offset..(byte_offset + usize::from(bytes_per_pixel))]
-            .copy_from_slice(&color[..usize::from(bytes_per_pixel)]);
-        let _ = unsafe { ptr::read_volatile(&self.framebuffer[byte_offset]) };
+        
+        let bytes_per_pixel = self.info.bytes_per_pixel as usize;
+        let byte_offset = pixel_offset * bytes_per_pixel;
+        
+        if byte_offset + bytes_per_pixel <= self.framebuffer.len() {
+            self.framebuffer[byte_offset..(byte_offset + bytes_per_pixel)]
+                .copy_from_slice(&color[..bytes_per_pixel]);
+        }
     }
 
+    pub fn draw_char(&mut self, x: usize, y: usize, c: char, r: u8, g: u8, b: u8) {
+        if let Some(bitmap_char) = get_raster(c, FontWeight::Regular, Size16) {
+            for (char_y, row) in bitmap_char.raster().iter().enumerate() {
+                for (char_x, &intensity) in row.iter().enumerate() {
+                    if intensity > 0 {
+                        self.safe_draw_pixel(x + char_x, y + char_y, r, g, b);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn draw_string(&mut self, x: usize, y: usize, text: &str, r: u8, g: u8, b: u8) {
+        let mut x_pos = x;
+        for c in text.chars() {
+            self.draw_char(x_pos, y, c, r, g, b);
+            x_pos += 8;
+        }
+    }
+
+    pub fn draw_string_centered(&mut self, y: usize, text: &str, r: u8, g: u8, b: u8) {
+        let x = (self.width() - text.len() * 8) / 2;
+        self.draw_string(x, y, text, r, g, b);
+    }
+
+    fn write_rendered_char(&mut self, rendered_char: RasterizedChar) {
+        for (y, row) in rendered_char.raster().iter().enumerate() {
+            for (x, &byte) in row.iter().enumerate() {
+                self.safe_draw_pixel(
+                    self.x_pos + x, 
+                    self.y_pos + y,
+                    byte / 4,
+                    byte,
+                    byte / 2
+                );
+            }
+        }
+        self.x_pos += rendered_char.width();
+    }
 }
 
 unsafe impl Send for ScreenWriter {}
